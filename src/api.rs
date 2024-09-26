@@ -1,5 +1,7 @@
 pub mod auth;
+pub mod aws;
 pub mod database;
+pub mod identity;
 pub mod kv1;
 pub mod kv2;
 pub mod pki;
@@ -72,12 +74,11 @@ pub struct AuthInfo {
 
 /// Represents an API response that has been wrapped by a unique token.
 ///
-/// See [response wrapping][1] for details on how this works. This struct stores
+/// See [response wrapping][<https://developer.hashicorp.com/vault/docs/concepts/response-wrapping>] for details on how this works. This struct stores
 /// the unique token returned by the server as well as the original endpoint
 /// request that generated this token. The struct contains methods for
 /// interacting with the wrapped response.
 ///
-// [1]: https://www.vaultproject.io/docs/concepts/response-wrapping
 pub struct WrappedResponse<E: Endpoint> {
     pub info: WrapInfo,
     pub endpoint: rustify::endpoint::EndpointResult<E::Response>,
@@ -154,9 +155,15 @@ impl MiddleWare for EndpointMiddleware {
         let mut url_c = url.clone();
         let mut segs: Vec<&str> = url.path_segments().unwrap().collect();
         segs.insert(0, self.version.as_str());
-        url_c.path_segments_mut().unwrap().clear().extend(segs);
+        url_c.set_path(format!("{}{}", self.version, url_c.path()).as_str());
         *req.uri_mut() = http::Uri::from_str(url_c.as_str()).unwrap();
         debug!("Middleware: final URL is {}", url_c.as_str());
+
+        // Add X-Vault-Request to all requests
+        req.headers_mut().append(
+            "X-Vault-Request",
+            http::HeaderValue::from_str("true").unwrap(),
+        );
 
         // Add Vault token to all requests
         if !self.token.is_empty() {
@@ -201,11 +208,12 @@ impl MiddleWare for EndpointMiddleware {
 ///
 /// Any errors which occur in execution are wrapped in a
 /// [ClientError::RestClientError] and propagated.
+#[instrument(name = "request", skip_all, fields(method = ?endpoint.method(), path = %endpoint.path()), err)]
 pub async fn exec_with_empty<E>(client: &impl Client, endpoint: E) -> Result<(), ClientError>
 where
     E: Endpoint,
 {
-    info!("Executing {} and expecting no response", endpoint.path());
+    info!("start request");
     endpoint
         .with_middleware(client.middle())
         .exec(client.http())
@@ -218,11 +226,12 @@ where
 ///
 /// Any errors which occur in execution are wrapped in a
 /// [ClientError::RestClientError] and propagated.
+#[instrument(name = "request", skip_all, fields(method = ?endpoint.method(), path = %endpoint.path()), err)]
 pub async fn exec_with_empty_result<E>(client: &impl Client, endpoint: E) -> Result<(), ClientError>
 where
     E: Endpoint,
 {
-    info!("Executing {} and expecting empty API data", endpoint.path());
+    info!("start request");
     endpoint
         .with_middleware(client.middle())
         .exec(client.http())
@@ -238,6 +247,7 @@ where
 ///
 /// Any errors which occur in execution are wrapped in a
 /// [ClientError::RestClientError] and propagated.
+#[instrument(name = "request", skip_all, fields(method = ?endpoint.method(), path = %endpoint.path()), err)]
 pub async fn exec_with_no_result<E>(
     client: &impl Client,
     endpoint: E,
@@ -245,10 +255,7 @@ pub async fn exec_with_no_result<E>(
 where
     E: Endpoint,
 {
-    info!(
-        "Executing {} and expecting an unwrapped response",
-        endpoint.path()
-    );
+    info!("start request");
     endpoint
         .with_middleware(client.middle())
         .exec(client.http())
@@ -274,6 +281,7 @@ where
 ///   [ClientError::ResponseDataEmptyError] is returned instead
 /// * The value from the enclosed `data` field is returned along with any
 ///   propagated errors.
+#[instrument(name = "request", skip_all, fields(method = ?endpoint.method(), path = %endpoint.path()), err)]
 pub async fn exec_with_result<E>(
     client: &impl Client,
     endpoint: E,
@@ -281,7 +289,7 @@ pub async fn exec_with_result<E>(
 where
     E: Endpoint,
 {
-    info!("Executing {} and expecting a response", endpoint.path());
+    info!("start request");
     endpoint
         .with_middleware(client.middle())
         .exec(client.http())
@@ -344,7 +352,7 @@ where
 /// Strips the wrapping information out of an [EndpointResult], returning the
 /// enclosing information as a [WrapInfo].
 fn strip_wrap<T>(result: EndpointResult<T>) -> Result<WrapInfo, ClientError> {
-    info!("Stripping wrap info from API response");
+    trace!("Stripping wrap info from API response");
     if let Some(w) = &result.warnings {
         match w.is_empty() {
             false => warn!("Server returned warnings with response: {:#?}", w),
@@ -359,7 +367,7 @@ fn strip<T>(result: EndpointResult<T>) -> Option<T>
 where
     T: DeserializeOwned,
 {
-    info!("Stripping response wrapper from API response");
+    trace!("Stripping response wrapper from API response");
     if let Some(w) = &result.warnings {
         match w.is_empty() {
             false => warn!("Detected warnings in API response: {:#?}", w),
@@ -380,7 +388,9 @@ fn parse_err(e: RestClientError) -> ClientError {
                 let errs: Result<EndpointError, _> = serde_json::from_str(c.as_str());
                 match errs {
                     Ok(err) => {
-                        error!("Detected errors in API response: {:#?}", err.errors);
+                        if !err.errors.is_empty() {
+                            error!("Detected errors in API response: {:#?}", err.errors);
+                        }
                         ClientError::APIError {
                             code: *code,
                             errors: err.errors,

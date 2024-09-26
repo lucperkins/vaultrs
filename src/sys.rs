@@ -2,8 +2,11 @@ use crate::{
     api::{
         self,
         sys::{
-            requests::{ReadHealthRequest, SealRequest, UnsealRequest},
-            responses::{ReadHealthResponse, UnsealResponse},
+            requests::{
+                ReadHealthRequest, SealRequest, StartInitializationRequest,
+                StartInitializationRequestBuilder, UnsealRequest,
+            },
+            responses::{ReadHealthResponse, StartInitializationResponse, UnsealResponse},
         },
     },
     client::Client,
@@ -25,16 +28,33 @@ pub enum ServerStatus {
 /// Returns health information about the Vault server.
 ///
 /// See [ReadHealthRequest]
-#[instrument(skip(client), err)]
 pub async fn health(client: &impl Client) -> Result<ReadHealthResponse, ClientError> {
     let endpoint = ReadHealthRequest::builder().build().unwrap();
+    api::exec_with_no_result(client, endpoint).await
+}
+
+/// Initialize a new Vault. The Vault must not have been previously initialized.
+///
+/// See [StartInitializationRequest]
+pub async fn start_initialization(
+    client: &impl Client,
+    secret_shares: u64,
+    secret_threshold: u64,
+    opts: Option<&mut StartInitializationRequestBuilder>,
+) -> Result<StartInitializationResponse, ClientError> {
+    let mut t = StartInitializationRequest::builder();
+    let endpoint = opts
+        .unwrap_or(&mut t)
+        .secret_shares(secret_shares)
+        .secret_threshold(secret_threshold)
+        .build()
+        .unwrap();
     api::exec_with_no_result(client, endpoint).await
 }
 
 /// Seals the Vault server.
 ///
 /// See [SealRequest]
-#[instrument(skip(client), err)]
 pub async fn seal(client: &impl Client) -> Result<(), ClientError> {
     let endpoint = SealRequest::builder().build().unwrap();
     api::exec_with_empty(client, endpoint).await
@@ -43,7 +63,6 @@ pub async fn seal(client: &impl Client) -> Result<(), ClientError> {
 /// Unseals the Vault server.
 ///
 /// See [UnsealRequest]
-#[instrument(skip(client), err)]
 pub async fn unseal(
     client: &impl Client,
     key: Option<String>,
@@ -62,7 +81,6 @@ pub async fn unseal(
 /// Returns the status of the Vault server.
 ///
 /// See [ReadHealthRequest]
-#[instrument(skip(client), err)]
 pub async fn status(client: &impl Client) -> Result<ServerStatus, ClientError> {
     let result = health(client).await;
     match result {
@@ -110,7 +128,6 @@ pub mod auth {
     /// Enables an auth engine at the given path
     ///
     /// See [EnableAuthRequest]
-    #[instrument(skip(client, opts), err)]
     pub async fn enable(
         client: &impl Client,
         path: &str,
@@ -130,7 +147,6 @@ pub mod auth {
     /// Lists all mounted auth engines
     ///
     /// See [ListAuthsRequest]
-    #[instrument(skip(client), err)]
     pub async fn list(client: &impl Client) -> Result<HashMap<String, AuthResponse>, ClientError> {
         let endpoint = ListAuthsRequest::builder().build().unwrap();
         api::exec_with_result(client, endpoint).await
@@ -142,16 +158,16 @@ pub mod mount {
 
     use crate::api;
     use crate::api::sys::requests::{
-        EnableEngineRequest, EnableEngineRequestBuilder, ListMountsRequest,
+        DisableEngineRequest, EnableEngineRequest, EnableEngineRequestBuilder,
+        GetConfigurationOfTheSecretEngineRequest, ListMountsRequest,
     };
-    use crate::api::sys::responses::MountResponse;
+    use crate::api::sys::responses::{GetConfigurationOfTheSecretEngineResponse, MountResponse};
     use crate::client::Client;
     use crate::error::ClientError;
 
     /// Enables a secret engine at the given path
     ///
     /// See [EnableEngineRequest]
-    #[instrument(skip(client, opts), err)]
     pub async fn enable(
         client: &impl Client,
         path: &str,
@@ -168,10 +184,33 @@ pub mod mount {
         api::exec_with_empty(client, endpoint).await
     }
 
+    /// Disable a secret engine at the given path
+    ///
+    /// See [DisableEngineRequest]
+    #[instrument(skip(client), err)]
+    pub async fn disable(client: &impl Client, path: &str) -> Result<(), ClientError> {
+        let endpoint = DisableEngineRequest::builder().path(path).build().unwrap();
+        api::exec_with_empty(client, endpoint).await
+    }
+
+    /// This endpoint returns the configuration of a specific secret engine.
+    ///
+    /// See [GetConfigurationOfTheSecretEngineRequest]
+    #[instrument(skip(client), err)]
+    pub async fn get_configuration_of_a_secret_engine(
+        client: &impl Client,
+        path: &str,
+    ) -> Result<GetConfigurationOfTheSecretEngineResponse, ClientError> {
+        let endpoint = GetConfigurationOfTheSecretEngineRequest::builder()
+            .path(path)
+            .build()
+            .unwrap();
+        api::exec_with_result(client, endpoint).await
+    }
+
     /// Lists all mounted secret engines
     ///
     /// See [ListMountsRequest]
-    #[instrument(skip(client), err)]
     pub async fn list(client: &impl Client) -> Result<HashMap<String, MountResponse>, ClientError> {
         let endpoint = ListMountsRequest::builder().build().unwrap();
         api::exec_with_result(client, endpoint).await
@@ -197,7 +236,6 @@ pub mod policy {
     /// Deletes the given policy.
     ///
     /// See [DeletePolicyRequest]
-    #[instrument(skip(client), err)]
     pub async fn delete(client: &impl Client, name: &str) -> Result<(), ClientError> {
         let endpoint = DeletePolicyRequest::builder().name(name).build().unwrap();
         api::exec_with_empty(client, endpoint).await
@@ -206,7 +244,6 @@ pub mod policy {
     /// Lists all configured policies.
     ///
     /// See [ListPoliciesRequest]
-    #[instrument(skip(client), err)]
     pub async fn list(client: &impl Client) -> Result<ListPoliciesResponse, ClientError> {
         let endpoint = ListPoliciesRequest::builder().build().unwrap();
         api::exec_with_result(client, endpoint).await
@@ -215,7 +252,6 @@ pub mod policy {
     /// Reads the given policy.
     ///
     /// See [ReadPolicyRequest]
-    #[instrument(skip(client), err)]
     pub async fn read(client: &impl Client, name: &str) -> Result<ReadPolicyResponse, ClientError> {
         let endpoint = ReadPolicyRequest::builder().name(name).build().unwrap();
         api::exec_with_result(client, endpoint).await
@@ -224,7 +260,6 @@ pub mod policy {
     /// Sets the given policy.
     ///
     /// See [CreatePolicyRequest]
-    #[instrument(skip(client), err)]
     pub async fn set(client: &impl Client, name: &str, policy: &str) -> Result<(), ClientError> {
         let endpoint = CreatePolicyRequest::builder()
             .name(name)
@@ -253,7 +288,6 @@ pub mod wrapping {
     /// Looks up information about a token wrapping response
     ///
     /// See [WrappingLookupResponse]
-    #[instrument(skip(client), err)]
     pub async fn lookup(
         client: &impl Client,
         token: &str,
@@ -268,7 +302,6 @@ pub mod wrapping {
     /// Unwraps a token wrapped response
     ///
     /// See [UnwrapRequest]
-    #[instrument(skip(client), err)]
     pub async fn unwrap<D: DeserializeOwned>(
         client: &impl Client,
         token: Option<&str>,
@@ -278,5 +311,32 @@ pub mod wrapping {
         };
         let res = api::exec_with_result(client, endpoint).await?;
         serde_json::value::from_value(res).map_err(|e| ClientError::JsonParseError { source: e })
+    }
+}
+
+pub mod tools {
+    use crate::{
+        api::{
+            self,
+            sys::{
+                requests::{RandomRequest, RandomRequestBuilder},
+                responses::RandomResponse,
+            },
+        },
+        client::Client,
+        error::ClientError,
+    };
+
+    /// Returns high-quality random bytes of the specified length.
+    ///
+    /// See [RandomResponse]
+    #[instrument(skip(client, opts), err)]
+    pub async fn random(
+        client: &impl Client,
+        opts: Option<&mut RandomRequestBuilder>,
+    ) -> Result<RandomResponse, ClientError> {
+        let mut t = RandomRequest::builder();
+        let endpoint = opts.unwrap_or(&mut t).build().unwrap();
+        api::exec_with_result(client, endpoint).await
     }
 }
